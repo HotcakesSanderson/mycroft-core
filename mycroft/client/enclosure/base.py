@@ -31,11 +31,6 @@ Namespace = namedtuple('Namespace', ['name', 'pages'])
 write_lock = Lock()
 
 
-def DEBUG(str):
-    print(str)
-    # pass  # disable by default
-
-
 class Enclosure():
 
     def __init__(self):
@@ -127,7 +122,7 @@ class Enclosure():
 
     def on_gui_client_connected(self, message):
         # GUI has announced presence
-        DEBUG("on_gui_client_connected")
+        LOG.debug("on_gui_client_connected")
         gui_id = message.data.get("gui_id")
 
         # Spin up a new communication socket for this GUI
@@ -136,7 +131,7 @@ class Enclosure():
             pass
         self.GUIs[gui_id] = GUIConnection(gui_id, self.global_config,
                                           self.callback_disconnect, self)
-        DEBUG("Heard announcement from gui_id: {}".format(gui_id))
+        LOG.debug("Heard announcement from gui_id: {}".format(gui_id))
 
         # Announce connection, the GUI should connect on it soon
         self.bus.emit(Message("mycroft.gui.port",
@@ -144,7 +139,7 @@ class Enclosure():
                                "gui_id": gui_id}))
 
     def callback_disconnect(self, gui_id):
-        DEBUG("Disconnecting!")
+        LOG.info("Disconnecting!")
         # TODO: Whatever is needed to kill the websocket instance
         LOG.info(self.GUIs.keys())
         LOG.info('deleting: {}'.format(gui_id))
@@ -218,7 +213,7 @@ class GUIConnection():
     server_thread = None
 
     def __init__(self, id, config, callback_disconnect, enclosure):
-        DEBUG("Creating GUIConnection")
+        LOG.debug("Creating GUIConnection")
         self.id = id
         self.socket = None
         self.callback_disconnect = callback_disconnect
@@ -265,15 +260,16 @@ class GUIConnection():
             self.webapp.gui = self  # Hacky way to associate socket with this
             self.webapp.listen(self.port, host)
         except Exception as e:
-            DEBUG('Error: {}'.format(repr(e)))
+            LOG.debug('Error: {}'.format(repr(e)))
         # Can't run two IOLoop's in the same process
         if not GUIConnection.server_thread:
             GUIConnection.server_thread = create_daemon(
                 ioloop.IOLoop.instance().start)
-        DEBUG("IOLoop started @ ws://{}:{}{}".format(host, self.port, route))
+        LOG.debug('IOLoop started @ '
+                  'ws://{}:{}{}'.format(host, self.port, route))
 
     def on_connection_opened(self, socket_handler):
-        DEBUG("on_connection_opened")
+        LOG.debug("on_connection_opened")
         self.socket = socket_handler
 
         # Synchronize existing datastore
@@ -289,26 +285,29 @@ class GUIConnection():
 
     def on_connection_closed(self, socket):
         # Self-destruct (can't reconnect on the same port)
-        DEBUG("on_connection_closed")
+        LOG.debug("on_connection_closed")
         if self.socket:
-            DEBUG("Server stopped: {}".format(self.socket))
+            LOG.debug("Server stopped: {}".format(self.socket))
             # TODO: How to stop the webapp for this socket?
             # self.socket.stop()
             self.socket = None
         self.callback_disconnect(self.id)
 
     def set(self, namespace, name, value):
-        if namespace not in self.datastore:
-            self.datastore[namespace] = {}
-        if self.datastore[namespace].get(name) != value:
-            self.datastore[namespace][name] = value
+        try:
+            if namespace not in self.datastore:
+                self.datastore[namespace] = {}
+            if self.datastore[namespace].get(name) != value:
+                self.datastore[namespace][name] = value
 
-            # If the namespace is loaded send data to gui
-            if namespace in [l.name for l in self.loaded]:
-                msg = {"type": "mycroft.session.set",
-                       "namespace": namespace,
-                       "data": {name: value}}
-                self.socket.send(msg)
+                # If the namespace is loaded send data to gui
+                if namespace in [l.name for l in self.loaded]:
+                    msg = {"type": "mycroft.session.set",
+                           "namespace": namespace,
+                           "data": {name: value}}
+                    self.socket.send(msg)
+        except Exception as e:
+            LOG.exception(repr(e))
 
     def __find_namespace(self, namespace):
         for i, skill in enumerate(self.loaded):
@@ -318,7 +317,7 @@ class GUIConnection():
 
     def __insert_pages(self, namespace, pages):
         """ Insert pages into the """
-        DEBUG("Inserting new pages")
+        LOG.debug("Inserting new pages")
         if not isinstance(pages, list):
             raise ValueError('Argument must be list of pages')
 
@@ -342,7 +341,7 @@ class GUIConnection():
                 namespace:  The skill namespace to create
                 pages:      Pages to insert
         """
-        DEBUG("Inserting new namespace")
+        LOG.debug("Inserting new namespace")
         self.socket.send({"type": "mycroft.session.list.insert",
                           "namespace": "mycroft.system.active_skills",
                           "position": 0,
@@ -357,7 +356,7 @@ class GUIConnection():
                    "data": {key: data[key]}}
             self.socket.send(msg)
 
-        DEBUG("Inserting new page")
+        LOG.debug("Inserting new page")
         self.socket.send({"type": "mycroft.gui.list.insert",
                           "namespace": namespace,
                           "position": 0,
@@ -373,11 +372,11 @@ class GUIConnection():
                 from_pos: Position in the stack to move from
                 to_pos: Position to move to
         """
-        DEBUG("Activating existing namespace")
+        LOG.debug("Activating existing namespace")
         # Seems like the namespace is moved to the top automatically when
         # a page change is done. Deactivating this for now.
         if self.explicit_move:
-            DEBUG("move {} to {}".format(from_pos, to_pos))
+            LOG.debug("move {} to {}".format(from_pos, to_pos))
             self.socket.send({"type": "mycroft.session.list.move",
                               "namespace": "mycroft.system.active_skills",
                               "from": from_pos, "to": to_pos,
@@ -396,11 +395,11 @@ class GUIConnection():
         try:
             num = self.loaded[0].pages.index(pages[0])
         except Exception as e:
-            DEBUG(e)
+            LOG.exception(repr(e))
             num = 0
 
-        DEBUG("Switching to already loaded page at "
-              "index {} in namespace {}".format(num, namespace))
+        LOG.debug('Switching to already loaded page at '
+                  'index {} in namespace {}'.format(num, namespace))
         self.socket.send({"type": "mycroft.events.triggered",
                           "namespace": namespace,
                           "event_name": "page_gained_focus",
@@ -413,7 +412,7 @@ class GUIConnection():
                   - Separate into multiple functions/methods
         """
 
-        DEBUG("GUIConnection activating: " + namespace)
+        LOG.debug("GUIConnection activating: " + namespace)
         pages = page if isinstance(page, list) else [page]
 
         # find namespace among loaded namespaces
@@ -438,7 +437,7 @@ class GUIConnection():
                     # No new pages, just switch
                     self.__switch_page(namespace, pages)
         except Exception as e:
-            DEBUG(repr(e))
+            LOG.exception(repr(e))
 
         # TODO: Not quite sure this is needed or if self.loaded can be used
         self.current_namespace = namespace
@@ -455,7 +454,7 @@ class GUIWebsocketHandler(WebSocketHandler):
         self.application.gui.on_connection_opened(self)
 
     def on_message(self, message):
-        DEBUG("Received: {}".format(message))
+        LOG.debug("Received: {}".format(message))
         msg = json.loads(message)
         msg_type = '{}.{}'.format(msg['namespace'], msg['event_name'])
         msg_data = msg['parameters']
